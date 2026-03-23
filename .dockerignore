@@ -1,0 +1,13 @@
+.git
+.claude
+.pytest_cache
+__pycache__
+*.pyc
+files/
+uploads/
+outputs/
+output/
+node_modules/
+.next/
+.DS_Store
+*.log

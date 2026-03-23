@@ -1,0 +1,59 @@
+services:
+  # ---------- PostgreSQL ----------
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: sara
+      POSTGRES_USER: sara
+      POSTGRES_PASSWORD: sara_pass
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sara -d sara"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ---------- FastAPI Backend ----------
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://sara:sara_pass@db:5432/sara
+      GENAI_API_URL: ${GENAI_API_URL:-https://genai-sharedservice-americas.pwcinternal.com}
+      GENAI_API_KEY: ${GENAI_API_KEY:-}
+      GENAI_MODEL: ${GENAI_MODEL:-bedrock.anthropic.claude-sonnet-4-6}
+      CORS_ORIGINS: '["http://localhost:3000","http://127.0.0.1:3000"]'
+      UPLOAD_DIR: /app/uploads
+      OUTPUT_DIR: /app/outputs
+      AGENT_SKILLS_DIR: /app/agent_skills
+    volumes:
+      - uploads:/app/uploads
+      - outputs:/app/outputs
+    depends_on:
+      db:
+        condition: service_healthy
+    working_dir: /app/backend
+
+  # ---------- Next.js Frontend ----------
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  uploads:
+  outputs:
