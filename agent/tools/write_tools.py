@@ -124,7 +124,7 @@ def replace_text_in_paragraph(paragraph_index: int, old_text: str, new_text: str
     ctx = _get_ctx()
     try:
         p = ctx.get_paragraph(paragraph_index)
-        changed = replace_text_in_element(p.getparent(), [(old_text, new_text)])
+        changed = replace_text_in_element(p, [(old_text, new_text)])
         if changed:
             return f"OK: Replaced '{old_text}' → '{new_text}' in paragraph {paragraph_index}"
         else:

@@ -41,35 +41,44 @@ def _workflow_section() -> str:
 ## Phase 1-2: 이미 자동 처리됨!
 시스템이 코드로 다음을 자동 처리했습니다:
 - **연도 롤링**: 헤더/푸터, 테이블 헤더, 본문 날짜/연도 업데이트 완료
-- **주석 데이터 자동 채우기**: DSD 전기 값과 DOCX 기존 값을 매칭하여 당기/전기 데이터 자동 입력 완료
+- **주석 데이터 자동 채우기**: DSD↔DOCX 전기값 매칭으로 당기/전기 숫자 자동 입력 완료
+- **자동 검증 + 수정**: 채우기 결과를 검증하고 오류를 자동 수정함
 
-read_memo("auto_fill_stats")로 자동 채우기 결과를 확인하세요.
+## Phase 3: 당신의 역할 — 잔여 오류 수정 + 미매칭 테이블 처리
 
-## Phase 3: 자동 검증 결과 확인 및 수정 (핵심)
+### Step 1: 현황 파악 (필수 — 반드시 첫 번째로)
+```
+find_unmatched_tables()
+```
+이 도구가 세 가지를 보여줍니다:
+- CRITICAL/WARNING 오류 목록 (반드시 수정)
+- 미매칭 DSD 테이블 목록 (DOCX에서 대응 테이블을 찾아 데이터 입력)
+- 자동 채우기 통계
 
-### 작업 순서 (필수)
-1. read_memo("verify_report") — 자동 검증 결과 확인
-2. find_unmatched_tables() — 미처리/오류 테이블 목록 확인
-3. 각 오류 테이블에 대해:
-   a. compare_dsd_docx(note_number, docx_table_index) — 어떤 셀이 틀렸는지 확인
-   b. batch_set_cells — 수정
-   c. verify_table(docx_table_index) — 수정 결과 검증
-4. 자동 채우기에서 매칭되지 않은 DSD 주석 처리:
-   - read_dsd_note_detail(number) → DSD 주석 테이블 데이터 확인
-   - search_text로 DOCX에서 대응 테이블 찾기
-   - read_table → 실제 행/열 구조 확인
-   - get_column_info → physical column 매핑 확인
-   - batch_set_cells로 데이터 입력
-5. 모든 CRITICAL 오류 해결 후에만 finish 허용
+### Step 2: CRITICAL 오류 수정 (있으면)
+각 오류 테이블에 대해:
+1. compare_dsd_docx(note_number, docx_table_index) — DSD↔DOCX 행별 비교
+2. batch_set_cells — 틀린 셀 수정
+3. verify_table(docx_table_index, note_number) — 수정 결과 DSD 대비 검증
+
+### Step 3: 미매칭 DSD 테이블 처리 (있으면)
+각 미매칭 주석에 대해:
+1. read_dsd_note_detail(number) — DSD 데이터 확인
+2. search_text("주석 제목 키워드") — DOCX에서 대응 테이블 찾기
+3. read_table(table_index) — DOCX 테이블 구조 확인
+4. get_column_info(table_index) — physical column 매핑 확인
+5. batch_set_cells — 데이터 입력
+6. verify_table(table_index, note_number) — 입력 결과 검증
+
+### Step 4: 완료
+- 모든 CRITICAL 오류 해결 후 finish
+- finish 시 시스템이 자동 재검증 — CRITICAL 0이면 완료, 아니면 거부
 
 ### 핵심 규칙
-- DSD 데이터는 실제 데이터입니다. 숫자가 있으면 반드시 입력하세요.
-- DOCX 영문 레이블은 절대 변경하지 마세요 (숫자만 업데이트)
-- batch_set_cells 전에 반드시 read_table로 구조를 확인하세요
-- 에러 발생 시 해당 테이블을 skip하고 다음으로 진행하세요
-
-## Phase 4: 완료
-- finish 액션으로 완료"""
+- **숫자만 업데이트** — 영문 레이블 절대 변경 금지 (레이블 보호가 코드로 강제됨)
+- **batch_set_cells 전에 read_table** — 구조 확인 필수
+- **실패 시 skip** — 에러 나면 해당 테이블 건너뛰고 다음으로 진행
+- **효율성** — 한 테이블의 모든 수정을 batch_set_cells 1회로 처리"""
 
 
 def _tools_section(tools: ToolRegistry) -> str:
@@ -105,19 +114,17 @@ def _rules_section() -> str:
 - 0 또는 빈 값: `-` 으로 표시
 - 천 단위 콤마 포함: `1,234,567`
 
-## 연도 롤링 패턴
-- DSD 당기가 2025이면: DOCX의 "2024" → "2025", "2023" → "2024"
-- "December 31, 2023" → "December 31, 2024", "December 31, 2024" → "December 31, 2025"
-- replace_in_headers_footers와 replace_in_table_headers로 일괄 처리
+## 연도 롤링
+- 이미 자동 처리됨. replace_in_headers_footers, replace_in_table_headers는 수동 보정이 필요할 때만 사용.
 
 ## 오류 대응
-- 실패 시 한 번 재시도, 안 되면 skip하고 다음 작업으로 진행하세요
-- 모든 테이블을 완벽하게 하기보다, 4대 FS를 먼저 정확하게 완료하세요
+- 실패 시 한 번 재시도, 안 되면 skip하고 다음 작업으로 진행
+- 4대 FS(재무상태표, 포괄손익, 자본변동, 현금흐름)를 우선 처리
 
-## 검증
-- 자동 검증에서 CRITICAL 오류가 있으면 반드시 수정하세요
-- verify_table()로 수정 결과를 확인하세요
-- 모든 CRITICAL 오류가 0이 될 때까지 finish하지 마세요"""
+## 검증 (중요!)
+- verify_table(table_index, note_number)로 수정 결과를 DSD 대비 검증
+- 모든 CRITICAL 오류가 0이 될 때까지 finish 불가 (시스템이 자동 재검증)
+- finish 시 CRITICAL 남으면 시스템이 거부하고 목록을 보여줌"""
 
 
 def _output_format_section() -> str:
@@ -150,27 +157,11 @@ def build_initial_instruction(dsd_path: str, docx_path: str, output_path: str) -
     """첫 사용자 메시지 (작업 시작 지시)."""
     return f"""새로운 작업을 시작합니다.
 
-입력:
-- DSD (한국어 당기 재무제표): {dsd_path}
-- DOCX (영문 전기 재무제표 템플릿): {docx_path}
+입력: DSD={dsd_path}, DOCX={docx_path}
+출력: {output_path}
 
-출력:
-- 업데이트된 영문 당기 DOCX: {output_path}
+시스템이 이미 연도 롤링 + 주석 자동 채우기 + 자동 검증/수정을 완료했습니다.
+당신은 잔여 오류와 미매칭 테이블만 처리하면 됩니다.
 
-## 시스템이 이미 처리한 것:
-1. **연도 롤링 완료**: 모든 날짜/연도가 자동 업데이트됨
-2. **주석 데이터 자동 채우기 완료**: DSD 전기 값 매칭으로 당기/전기 숫자 데이터 자동 입력됨
-3. **자동 검증 및 수정 완료**: 채우기 결과를 검증하고 오류를 자동 수정함
-
-## 즉시 실행하세요:
-1. read_memo("verify_report") — 자동 검증 결과를 확인하세요
-2. find_unmatched_tables() — 미처리/오류 테이블 목록 확인
-3. CRITICAL 오류가 있는 테이블부터 처리:
-   - compare_dsd_docx(note_number, docx_table_index) → 상세 비교
-   - batch_set_cells → 수정
-   - verify_table(docx_table_index) → 수정 결과 확인
-4. 매칭 안 된 DSD 주석도 처리
-
-**중요**: 자동 채우기가 이미 처리한 테이블은 건드리지 마세요. 오류가 있는 테이블만 수정하세요.
-**숫자 셀만 업데이트하세요. 레이블 보호가 코드로 강제됩니다.**
-**모든 CRITICAL 오류를 해결한 후에만 finish하세요.**"""
+**지금 바로 실행하세요:**
+find_unmatched_tables()"""

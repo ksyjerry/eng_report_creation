@@ -167,15 +167,49 @@ def validate_numbers(docx_table_index: int, expected_values: dict) -> str:
 
 @tool("find_unmatched_tables", "자동 검증 결과에서 미매칭/오류 테이블 목록을 반환합니다.")
 def find_unmatched_tables() -> str:
-    """verify_report에서 오류 테이블 목록 반환."""
-    ctx = _get_ctx()
-    # Access working memory through module-level variable
+    """verify_report + unmatched_dsd_tables를 통합하여 Agent가 처리할 항목 반환."""
     if _memory is None:
         return "ERROR: Working memory not available"
-    report_text = _memory.get("verify_report")
-    if not report_text:
-        return "INFO: Auto-verification has not run yet. No verify_report in memory."
-    return report_text
+
+    lines = ["== Agent Action Items ==", ""]
+
+    # 1. CRITICAL/WARNING 오류 (verify_report)
+    unresolved = _memory.get("unresolved_errors")
+    if unresolved:
+        lines.append("### CRITICAL/WARNING Errors (must fix)")
+        lines.append(unresolved)
+        lines.append("")
+    else:
+        lines.append("### Verification: All matched tables OK (0 CRITICAL)")
+        lines.append("")
+
+    # 2. 미매칭 DSD 테이블
+    unmatched = _memory.get("unmatched_dsd_tables")
+    if unmatched:
+        lines.append("### Unmatched DSD Tables (auto-fill could not find matching DOCX table)")
+        lines.append("These DSD notes have data but no DOCX table was matched.")
+        lines.append("Use read_dsd_note_detail(number) to see data, then search_text to find DOCX table.")
+        lines.append("")
+        lines.append(unmatched)
+        lines.append("")
+    else:
+        lines.append("### All DSD tables matched to DOCX tables")
+        lines.append("")
+
+    # 3. 자동 채우기 통계
+    fill_stats = _memory.get("auto_fill_stats")
+    if fill_stats:
+        lines.append("### Auto-fill Summary")
+        lines.append(fill_stats)
+        lines.append("")
+
+    # 4. 검증 보고서 요약
+    report = _memory.get("verify_report")
+    if report:
+        lines.append("### Verify Report")
+        lines.append(report)
+
+    return "\n".join(lines)
 
 
 @tool("compare_dsd_docx", "DSD 주석 데이터와 DOCX 테이블을 행별로 비교합니다.")
@@ -324,15 +358,10 @@ def _values_match(expected: Optional[int], actual: Optional[int], tolerance: int
     return False
 
 
-@tool("verify_table", "특정 DOCX 테이블의 값을 DSD와 비교하여 검증합니다.")
-def verify_table(docx_table_index: int) -> str:
+@tool("verify_table", "특정 DOCX 테이블의 값을 DSD와 비교하여 검증합니다. note_number를 지정하면 DSD 값과 직접 비교합니다.")
+def verify_table(docx_table_index: int, note_number: str = "") -> str:
     """DOCX 테이블의 현재 셀 값을 DSD 기대값과 비교하여 상세 검증 보고서 반환."""
     ctx = _get_ctx()
-
-    # Working memory에서 매칭 정보 확인
-    match_info = None
-    if _memory is not None:
-        match_info = _memory.get("verify_report")
 
     try:
         tbl = ctx.get_table(docx_table_index)
@@ -348,17 +377,39 @@ def verify_table(docx_table_index: int) -> str:
         lines.append(f"Spacer columns: {mapping.spacer_indices}")
     lines.append("")
 
-    # 모든 행의 셀 값 읽기
-    lines.append(f"{'Row':>4} | {'Label':<35} | {'Col1 (Current)':>15} | {'Col2 (Prior)':>15}")
-    lines.append("-" * 80)
+    # DSD 데이터와 비교 (note_number가 주어진 경우)
+    dsd_rows_map = {}
+    dsd_unit = "원"
+    docx_unit = "원"
+    if note_number and ctx.dsd_data is not None:
+        from agent.note_filler import extract_dsd_tables, _convert_value, _detect_docx_unit
+        dsd_tables = extract_dsd_tables(ctx.dsd_data)
+        matched_dsd = [t for t in dsd_tables if t.note_number == note_number]
+        docx_unit = _detect_docx_unit(tbl)
+        if matched_dsd:
+            dsd_tbl = matched_dsd[0]
+            dsd_unit = dsd_tbl.unit or "원"
+            for dsd_row in dsd_tbl.rows:
+                dsd_cur = _convert_value(dsd_row.values.get("current"), dsd_unit, docx_unit)
+                dsd_pri = _convert_value(dsd_row.values.get("prior"), dsd_unit, docx_unit)
+                dsd_rows_map[dsd_row.row_idx] = (dsd_row.label, dsd_cur, dsd_pri)
+            lines.append(f"DSD note {note_number}: {len(dsd_tbl.rows)} rows, unit: {dsd_unit}")
+            lines.append(f"DOCX unit: {docx_unit}")
+            lines.append("")
+
+    # 헤더 형식
+    if dsd_rows_map:
+        lines.append(f"{'Row':>4} | {'DOCX Label':<30} | {'DOCX Cur':>12} | {'DSD Cur':>12} | {'OK':>3} | {'DOCX Pri':>12} | {'DSD Pri':>12} | {'OK':>3}")
+        lines.append("-" * 120)
+    else:
+        lines.append(f"{'Row':>4} | {'Label':<35} | {'Col1 (Current)':>15} | {'Col2 (Prior)':>15}")
+        lines.append("-" * 80)
 
     pass_count = 0
     fail_count = 0
-    empty_count = 0
 
     for ri, tr in enumerate(rows):
         cells = findall_w(tr, "w:tc")
-        # spacer 제외한 logical cells
         logical_texts = []
         phys = 0
         for tc in cells:
@@ -375,33 +426,35 @@ def verify_table(docx_table_index: int) -> str:
                         span = 1
             phys += span
 
-        label = logical_texts[0][:35] if logical_texts else ""
+        label = logical_texts[0][:30] if logical_texts else ""
         col1 = logical_texts[1] if len(logical_texts) > 1 else ""
         col2 = logical_texts[2] if len(logical_texts) > 2 else ""
 
-        # 숫자 값 파싱하여 검증
-        col1_val = _parse_numeric(col1) if col1 else None
-        col2_val = _parse_numeric(col2) if col2 else None
+        if dsd_rows_map and ri in dsd_rows_map:
+            dsd_label, dsd_cur, dsd_pri = dsd_rows_map[ri]
+            docx_cur_val = _parse_numeric(col1)
+            docx_pri_val = _parse_numeric(col2)
+            cur_ok = _values_match(dsd_cur, docx_cur_val)
+            pri_ok = _values_match(dsd_pri, docx_pri_val)
+            if cur_ok:
+                pass_count += 1
+            else:
+                fail_count += 1
+            dsd_cur_s = f"{dsd_cur:,}" if dsd_cur is not None else "-"
+            dsd_pri_s = f"{dsd_pri:,}" if dsd_pri is not None else "-"
+            cur_mark = "✓" if cur_ok else "✗"
+            pri_mark = "✓" if pri_ok else "✗"
+            lines.append(f"{ri:>4} | {label:<30} | {col1:>12} | {dsd_cur_s:>12} | {cur_mark:>3} | {col2:>12} | {dsd_pri_s:>12} | {pri_mark:>3}")
+        else:
+            lines.append(f"{ri:>4} | {label:<35} | {col1:>15} | {col2:>15}")
 
-        if col1_val is not None or col2_val is not None:
-            pass_count += 1
-        elif not label and not col1 and not col2:
-            empty_count += 1
-
-        lines.append(f"{ri:>4} | {label:<35} | {col1:>15} | {col2:>15}")
-
-    lines.append("")
-    lines.append(f"Summary: {len(rows)} rows, {pass_count} with data, {empty_count} empty")
-
-    # verify_report 정보가 있으면 해당 테이블의 상태 추가
-    if match_info:
-        # 해당 테이블 번호 언급 여부 확인
-        table_ref = f"Table {docx_table_index}"
-        if table_ref in match_info:
-            lines.append("")
-            lines.append("=== From verify_report ===")
-            for line in match_info.split("\n"):
-                if table_ref in line or f"table {docx_table_index}" in line.lower():
-                    lines.append(f"  {line.strip()}")
+    if dsd_rows_map:
+        lines.append("")
+        total = pass_count + fail_count
+        lines.append(f"DSD Comparison: {pass_count}/{total} correct, {fail_count} errors")
+    else:
+        lines.append("")
+        lines.append(f"Total: {len(rows)} rows (no DSD note specified for comparison)")
+        lines.append("Tip: Use verify_table(table_index, note_number) to compare with DSD data")
 
     return "\n".join(lines)

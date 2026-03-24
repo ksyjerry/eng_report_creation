@@ -204,30 +204,48 @@ class Agent:
 
             # finish 액션
             if parsed["action"] == "finish":
-                # 조기 종료 방지: 최소 10 step 이상 진행해야 finish 허용
-                if step < 10:
-                    self._log("warning", f"Step {step}에서 조기 finish 시도 — 거부. 더 많은 주석을 처리하세요.")
+                # 조기 종료 방지: 최소 5 step 이상 진행해야 finish 허용
+                if step < 5:
+                    self._log("warning", f"Step {step}에서 조기 finish 시도 — 거부.")
                     self.messages.append({"role": "assistant", "content": response_text})
                     self.messages.append({
                         "role": "user",
-                        "content": "[System] 아직 작업이 충분하지 않습니다. DSD 주석의 테이블 데이터를 DOCX에 반영하세요. batch_set_cells로 숫자 데이터를 입력하세요. finish하지 마세요.",
+                        "content": "[System] 아직 작업이 충분하지 않습니다. read_memo('verify_report')로 검증 결과를 확인하고, find_unmatched_tables()로 미처리 항목을 확인하세요.",
                     })
                     continue
 
                 # CRITICAL 오류가 남아있으면 finish 거부 (step 50 미만일 때)
                 unresolved = self.memory.get("unresolved_errors")
                 if unresolved and step < 50:
-                    unresolved_count = len(unresolved.strip().split("\n"))
-                    self._log("warning", f"CRITICAL 오류 {unresolved_count}개 미해결 — finish 거부")
-                    self.messages.append({"role": "assistant", "content": response_text})
-                    self.messages.append({
-                        "role": "user",
-                        "content": f"[System] 아직 {unresolved_count}개 CRITICAL 오류가 남아있습니다. "
-                                   f"find_unmatched_tables()로 오류 목록을 확인하고, compare_dsd_docx()로 상세 비교 후, "
-                                   f"batch_set_cells로 수정하세요. 모든 CRITICAL 오류를 해결한 후 finish하세요.\n"
-                                   f"미해결 오류:\n{unresolved}",
-                    })
-                    continue
+                    # 실제로 CRITICAL 오류가 아직 남아있는지 재검증
+                    try:
+                        re_report = await asyncio.to_thread(
+                            verify_fill_results, self.ctx, self.ctx.dsd_data,
+                            fill_matches if fill_matches else []
+                        )
+                        re_unresolved = re_report.unresolved_errors()
+                        if re_unresolved:
+                            self.memory.set("verify_report", re_report.summary())
+                            error_tables = sorted(set(
+                                f"Table {e.table_index} (주석 {e.note_number}): {e.error_type}"
+                                for e in re_unresolved
+                            ))
+                            self.memory.set("unresolved_errors", "\n".join(error_tables))
+                            self._log("warning", f"재검증 결과 CRITICAL {re_report.critical_count}개 — finish 거부")
+                            self.messages.append({"role": "assistant", "content": response_text})
+                            self.messages.append({
+                                "role": "user",
+                                "content": f"[System] 재검증 결과 아직 {re_report.critical_count}개 CRITICAL 오류가 남아있습니다.\n"
+                                           f"find_unmatched_tables()로 확인 후 수정하세요.\n"
+                                           f"미해결 오류:\n" + "\n".join(error_tables),
+                            })
+                            continue
+                        else:
+                            # 모든 오류 해결됨 — unresolved_errors 초기화
+                            self.memory.delete("unresolved_errors")
+                            self._log("success", "재검증 통과 — 모든 CRITICAL 오류 해결됨")
+                    except Exception as e:
+                        self._log("warning", f"재검증 실패: {e} — finish 허용")
 
                 self._log("success", "작업 완료!")
                 await asyncio.to_thread(self.ctx.save_docx, output_path)
