@@ -6,12 +6,14 @@ Cross-run 텍스트 교체 — 연도 롤링 등에 사용.
 
 알고리즘:
   1. 각 <w:p> 내의 모든 <w:t> 텍스트를 연결
-  2. 연결된 텍스트에 모든 replacement를 atomic하게 적용
+  2. 연결된 텍스트에 모든 replacement를 단일 패스로 적용 (cascade 방지)
   3. 원래 <w:t> 요소의 크기에 맞게 텍스트 재분배
   4. 마지막 요소가 overflow 흡수
 """
 
 from __future__ import annotations
+
+import re
 
 from lxml import etree
 
@@ -25,6 +27,9 @@ def replace_text_in_element(
     """
     XML 트리 내 모든 문단에서 텍스트 교체. Cross-run 대응.
 
+    단일 패스 교체: 모든 교체 쌍을 하나의 정규식으로 결합하여
+    한 번에 교체. 긴 패턴 우선 매칭으로 cascade 완전 방지.
+
     Args:
         root: 검색 대상 XML 트리 루트
         replacements: [(old, new), ...] 교체 쌍
@@ -32,12 +37,17 @@ def replace_text_in_element(
     Returns:
         교체가 발생했으면 True
     """
-    # 큰 값부터 정렬하여 cascade 방지
-    # 예: "2024"→"2025" 먼저 적용 후 "2023"→"2024" 적용하면
-    # "2023"이 "2024"로 바뀐 뒤 다시 "2025"로 바뀌는 문제 방지
-    sorted_replacements = sorted(
-        replacements, key=lambda pair: pair[0], reverse=True
-    )
+    if not replacements:
+        return False
+
+    # 긴 패턴부터 정규식 alternation으로 결합 (단일 패스 교체)
+    # 같은 길이면 알파벳 역순 (2024 before 2023)
+    sorted_repls = sorted(replacements, key=lambda p: (-len(p[0]), p[0]), reverse=False)
+    repl_map = {old: new for old, new in sorted_repls}
+
+    # 정규식 패턴: 긴 것부터 | 로 연결
+    escaped = [re.escape(old) for old, _ in sorted_repls]
+    pattern = re.compile("|".join(escaped))
 
     changed = False
 
@@ -50,10 +60,8 @@ def replace_text_in_element(
         texts = [t.text or "" for t in t_elements]
         concat = "".join(texts)
 
-        # 모든 교체를 한 번에 적용 (atomic)
-        new_concat = concat
-        for old, new in sorted_replacements:
-            new_concat = new_concat.replace(old, new)
+        # 단일 패스 교체 — 매칭된 패턴을 map에서 lookup
+        new_concat = pattern.sub(lambda m: repl_map[m.group(0)], concat)
 
         if new_concat == concat:
             continue

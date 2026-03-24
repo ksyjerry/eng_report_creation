@@ -199,9 +199,11 @@ def apply_year_rolling(ctx: DocumentContext, dsd_data, log_callback=None) -> dic
     _log(f"테이블 헤더: {stats['table_headers']}행 수정")
 
     # 3. 본문 문단: 날짜 패턴 + 문맥 연도 패턴 적용 (순수 연도는 제외 — 설립년도 등 보호)
+    # 주의: p.getparent()가 아닌 p 자체를 전달 — body를 전달하면 테이블 내부 문단까지
+    # 재처리되어 step 2와 cross-step cascade 발생
     paragraphs = ctx.get_paragraphs()
     for p in paragraphs:
-        if replace_text_in_element(p.getparent(), para_repls):
+        if replace_text_in_element(p, para_repls):
             stats["paragraphs"] += 1
     _log(f"본문 문단: {stats['paragraphs']}개 수정")
 
