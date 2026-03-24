@@ -73,11 +73,14 @@ class JobManager:
         # 이벤트 루프에 양보 — HTTP 응답이 먼저 클라이언트에 전달되도록
         await asyncio.sleep(0)
 
+        # 이벤트 루프 참조 (스레드 안전 콜백용)
+        loop = asyncio.get_running_loop()
+
         # DB 진행률 업데이트 주기 제어
         _last_db_update = [0.0]
 
         def log_callback(msg: dict):
-            """Agent 로그를 큐에 넣기."""
+            """Agent 로그를 큐에 넣기 (스레드 안전)."""
             # 진행률 먼저 계산 & msg에 주입
             step_progress = _estimate_progress(msg)
             if step_progress is not None:
@@ -86,19 +89,17 @@ class JobManager:
             if "message" in msg:
                 job.current_step = msg["message"][:100]
 
-            # DB 업데이트 (5초 간격)
+            # DB 업데이트 (5초 간격, 스레드 안전)
             now = time.time()
             if now - _last_db_update[0] > 5:
                 _last_db_update[0] = now
-                asyncio.ensure_future(
-                    db.update_job_progress(job.id, job.progress, job.current_step)
+                loop.call_soon_threadsafe(
+                    asyncio.ensure_future,
+                    db.update_job_progress(job.id, job.progress, job.current_step),
                 )
 
-            # 그 다음 큐에 넣기
-            try:
-                job.log_queue.put_nowait(msg)
-            except asyncio.QueueFull:
-                pass
+            # 큐에 넣기 (스레드 안전)
+            loop.call_soon_threadsafe(job.log_queue.put_nowait, msg)
 
         try:
             from agent.agent import Agent

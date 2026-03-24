@@ -6,6 +6,7 @@ PwC GenAI Gateway를 사용하여 JSON 기반 Tool Use 시뮬레이션.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -83,12 +84,12 @@ class Agent:
         """Agent 실행. DSD + DOCX → 업데이트된 DOCX."""
         # 문서 로드
         self._log("info", f"DOCX 로딩: {docx_path}")
-        self.ctx.load_docx(docx_path)
+        await asyncio.to_thread(self.ctx.load_docx, docx_path)
         self._log("info", f"DOCX 로딩 완료 — 테이블 {self.ctx.num_tables()}개")
 
         try:
             self._log("info", f"DSD 로딩: {dsd_path}")
-            self.ctx.load_dsd(dsd_path)
+            await asyncio.to_thread(self.ctx.load_dsd, dsd_path)
             self._log("info", "DSD 로딩 완료")
         except Exception as e:
             self._log("warning", f"DSD 로딩 실패: {e} — DOCX만으로 진행")
@@ -97,7 +98,7 @@ class Agent:
         if self.ctx.dsd_data is not None:
             self._log("info", "연도 롤링 자동 처리 시작")
             try:
-                yr_stats = apply_year_rolling(self.ctx, self.ctx.dsd_data, self.log_callback)
+                yr_stats = await asyncio.to_thread(apply_year_rolling, self.ctx, self.ctx.dsd_data, self.log_callback)
                 self._log("success", f"연도 롤링 완료 — {yr_stats.get('total_elements', 0)}개 요소 수정")
             except Exception as e:
                 self._log("warning", f"연도 롤링 실패: {e} — Agent가 수동 처리합니다")
@@ -107,7 +108,7 @@ class Agent:
         if self.ctx.dsd_data is not None:
             self._log("info", "주석 데이터 자동 채우기 시작")
             try:
-                fill_stats, fill_matches = apply_note_filling(self.ctx, self.ctx.dsd_data, self.log_callback)
+                fill_stats, fill_matches = await asyncio.to_thread(apply_note_filling, self.ctx, self.ctx.dsd_data, self.log_callback)
                 self._log("success",
                     f"주석 자동 채우기 완료 — {fill_stats.get('tables_matched', 0)}개 테이블, "
                     f"{fill_stats.get('cells_updated', 0)}셀 업데이트")
@@ -142,13 +143,13 @@ class Agent:
                 def _verify_log(msg: str):
                     self._log("info", msg)
 
-                verify_report = verify_fill_results(self.ctx, self.ctx.dsd_data, matches, _verify_log)
+                verify_report = await asyncio.to_thread(verify_fill_results, self.ctx, self.ctx.dsd_data, matches, _verify_log)
                 self._log("info", f"검증 완료: {verify_report.cells_checked}셀 검사, {verify_report.cells_wrong}개 오류, CRITICAL {verify_report.critical_count}개")
 
                 # 자동 수정
                 if verify_report.cells_wrong > 0:
                     self._log("info", "자동 수정 시작")
-                    fixed = auto_fix_errors(self.ctx, verify_report, matches, _verify_log)
+                    fixed = await asyncio.to_thread(auto_fix_errors, self.ctx, verify_report, matches, _verify_log)
                     self._log("success", f"자동 수정 완료: {fixed}셀 수정")
 
                 # Working Memory에 검증 결과 저장
@@ -229,7 +230,7 @@ class Agent:
                     continue
 
                 self._log("success", "작업 완료!")
-                self.ctx.save_docx(output_path)
+                await asyncio.to_thread(self.ctx.save_docx, output_path)
                 self._log("info", f"결과 저장: {output_path}")
                 return parsed.get("action_input", {})
 
@@ -297,7 +298,7 @@ class Agent:
 
         # 최대 step 초과
         self._log("error", f"최대 step({self.max_steps}) 초과")
-        self.ctx.save_docx(output_path)
+        await asyncio.to_thread(self.ctx.save_docx, output_path)
         return {"error": "Max steps exceeded", "output_path": output_path}
 
     async def _call_llm(self) -> str:
